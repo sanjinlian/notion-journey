@@ -6,62 +6,59 @@ import { zhTW } from 'date-fns/locale';
 import { ChevronDown, Calendar } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-import { TripMetadata, ItineraryItem } from '@/lib/notion';
+import { TripMetadata, ItineraryItem, TaskItem, ExpenseItem } from '@/lib/notion';
 import { parseNotionDateTime, cn } from '@/lib/utils';
 import { JourneyCard } from './JourneyCard';
-// import { LoginScreen } from './LoginScreen'; // Removed
 import { TopBar } from './TopBar';
-// import Cookies from 'js-cookie'; // Removed
 import { BottomNav, TabType } from './BottomNav';
 import { CurrencyWidget } from './CurrencyWidget';
 import { TimeZoneWidget } from './TimeZoneWidget';
-import { Phone, ShieldAlert } from 'lucide-react';
+import { ShieldAlert } from 'lucide-react';
 import { NotionBlockRenderer } from './NotionBlockRenderer';
 import { PullToRefresh } from './PullToRefresh';
+import { AddJourneyModal } from './AddJourneyModal';
+import { TasksTab } from './TasksTab';
+import { ExpenseTab } from './ExpenseTab';
 
 interface JourneyDashboardProps {
     data: {
         metadata: TripMetadata;
         itinerary: ItineraryItem[];
+        tasks: TaskItem[];
+        expenses: ExpenseItem[];
     };
     requiredPassword?: string | null;
+    isAuthenticated: boolean;
 }
 
 // Helper to ensure we treat strings as local time (stripping timezones)
 const toFloatingDate = (dateStr: string): Date => {
     const { dateTimeStr } = parseNotionDateTime(dateStr);
-    // dateTimeStr is "YYYY-MM-DD" or "YYYY-MM-DD HH:mm"
-    // If we pass this to parseISO (without Z), it create a local date
     return parseISO(dateTimeStr);
 };
 
-export default function JourneyDashboard({ data, requiredPassword }: JourneyDashboardProps) {
-    const { metadata, itinerary } = data;
+export default function JourneyDashboard({ data, requiredPassword, isAuthenticated }: JourneyDashboardProps) {
+    const { metadata, itinerary, tasks, expenses } = data;
 
     const [activeTab, setActiveTab] = useState<TabType>('home');
     const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
-
-    // Current time for "Now" logic
-    // In a real app, you might want this to update every minute, but for now fixed on mount is fine
     const [now, setNow] = useState<Date | null>(null);
 
     useEffect(() => {
         setNow(new Date());
     }, []);
 
-    // Sort by date (already sorted in notion.ts but good safety)
     const sortedJourneys = useMemo(() =>
         [...itinerary].sort((a, b) => {
             return toFloatingDate(a.date).getTime() - toFloatingDate(b.date).getTime();
         }),
         [itinerary]);
 
-    // Group by Day
     const groupedJourneys = useMemo(() => {
         const groups: Record<string, ItineraryItem[]> = {};
         sortedJourneys.forEach(item => {
             const { date } = parseNotionDateTime(item.date);
-            if (!date) return; // skip items without valid dates
+            if (!date) return;
             if (!groups[date]) groups[date] = [];
             groups[date].push(item);
         });
@@ -70,7 +67,6 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
 
     const allDates = useMemo(() => Object.keys(groupedJourneys).sort(), [groupedJourneys]);
 
-    // Initialize expanded state for Today
     useEffect(() => {
         if (!now) return;
         const todayKey = format(now, 'yyyy-MM-dd');
@@ -80,13 +76,11 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                 [todayKey]: true
             }));
         } else {
-            // If today not in list, maybe expand the first upcoming day?
-            // For now, let's just expand the first day if nothing else matches
             if (allDates.length > 0 && !Object.keys(expandedDays).length) {
                 setExpandedDays({ [allDates[0]]: true });
             }
         }
-    }, [allDates, now]); // Run when dates ready or now loaded
+    }, [allDates, now]);
 
     const toggleDay = (dateStr: string) => {
         setExpandedDays(prev => ({
@@ -97,7 +91,6 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
 
     // -- Render Logic --
 
-    // 1. UNIFIED HOME TAB
     const renderHome = () => {
         return (
             <div className="pb-8 pt-4">
@@ -115,7 +108,7 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                     {allDates.map((dateStr, index) => {
                         const isExpanded = !!expandedDays[dateStr];
                         const dayItems = groupedJourneys[dateStr];
-                        const dateObj = parseISO(dateStr); // safe for YYYY-MM-DD
+                        const dateObj = parseISO(dateStr);
                         const isToday = now ? isSameDay(dateObj, now) : false;
 
                         return (
@@ -126,7 +119,6 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                                     isExpanded ? "bg-white/60 border-blue-100 shadow-md" : "bg-white/40 border-white/60 hover:bg-white/60"
                                 )}
                             >
-                                {/* Header / Big Card Trigger */}
                                 <button
                                     onClick={() => toggleDay(dateStr)}
                                     className="w-full p-4 flex items-center justify-between"
@@ -166,7 +158,6 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                                     </div>
                                 </button>
 
-                                {/* Expanded Content */}
                                 <AnimatePresence>
                                     {isExpanded && (
                                         <motion.div
@@ -176,12 +167,9 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                                             transition={{ duration: 0.3, ease: "easeInOut" }}
                                         >
                                             <div className="px-4 pb-4 pt-0 space-y-3 border-t border-slate-100/50 mt-1">
-                                                <div className="h-2" /> {/* Spacer */}
+                                                <div className="h-2" />
                                                 {dayItems.map(item => {
                                                     const itemTime = toFloatingDate(item.date);
-                                                    // Check if item time is strictly before "Now" time
-                                                    // This requires careful comparison of floating date vs real date
-                                                    // If "now" is 2026-01-02 14:00 local, and item is 2026-01-02 09:00 (floating), it is past.
                                                     const isPast = now ? isBefore(itemTime, now) : false;
 
                                                     return (
@@ -189,7 +177,8 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                                                             key={item.id}
                                                             item={item}
                                                             isPast={isPast}
-                                                            hideImage={true} // Only icons, no images in list
+                                                            hideImage={true}
+                                                            isAuthenticated={isAuthenticated}
                                                         />
                                                     );
                                                 })}
@@ -205,12 +194,10 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
         );
     };
 
-    // 3. FILTERED TABS
     const renderFiltered = (filterType: string | 'visit_group') => {
         let filteredItems = sortedJourneys;
 
         if (filterType === 'visit_group') {
-            // 'visit', 'shopping', 'restaurant' are mapped to Visit tab
             filteredItems = sortedJourneys.filter(j => ['visit', 'shopping', 'restaurant'].includes(j.category));
         } else {
             filteredItems = sortedJourneys.filter(j => j.category === filterType);
@@ -247,7 +234,7 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                             <div className="space-y-3">
                                 {group.items.map(item => (
                                     <div key={item.id}>
-                                        <JourneyCard item={item} />
+                                        <JourneyCard item={item} isAuthenticated={isAuthenticated} />
                                     </div>
                                 ))}
                             </div>
@@ -258,8 +245,6 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
         );
     };
 
-    // 4. INFO TAB (Placeholder content or adapted)
-    // 4. INFO TAB
     const renderInfo = () => (
         <div className="pb-8 pt-4 px-4">
             {metadata.infoPage ? (
@@ -275,14 +260,12 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
         </div>
     );
 
-
-
     // Swipe Logic
-    const TABS: TabType[] = ['home', 'visit', 'hotel', 'transport', 'info'];
+    const TABS: TabType[] = ['home', 'visit', 'hotel', 'transport', 'tasks', 'expense', 'info'];
     const minSwipeDistance = 50;
     const [touchStart, setTouchStart] = useState<number | null>(null);
     const [touchEnd, setTouchEnd] = useState<number | null>(null);
-    const [touchStartY, setTouchStartY] = useState<number | null>(null); // To check vertical dominance
+    const [touchStartY, setTouchStartY] = useState<number | null>(null);
 
     const onTouchStart = (e: React.TouchEvent) => {
         setTouchEnd(null);
@@ -294,7 +277,6 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
         setTouchEnd(e.targetTouches[0].clientX);
     };
 
-    // Navigation Direction for Animation
     const [direction, setDirection] = useState(0);
 
     const variants = {
@@ -389,6 +371,16 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                                     {activeTab === 'visit' && renderFiltered('visit_group')}
                                     {activeTab === 'hotel' && renderFiltered('hotel')}
                                     {activeTab === 'transport' && renderFiltered('transport')}
+                                    {activeTab === 'tasks' && (
+                                        <TasksTab tasks={tasks} isAuthenticated={isAuthenticated} />
+                                    )}
+                                    {activeTab === 'expense' && (
+                                        <ExpenseTab
+                                            expenses={expenses}
+                                            currency={metadata.exchangeRate || 'JPY'}
+                                            isAuthenticated={isAuthenticated}
+                                        />
+                                    )}
                                     {activeTab === 'info' && renderInfo()}
                                 </motion.div>
                             </AnimatePresence>
@@ -397,6 +389,11 @@ export default function JourneyDashboard({ data, requiredPassword }: JourneyDash
                 </main>
 
                 <BottomNav currentTab={activeTab} onTabChange={changeTab} />
+
+                {/* Global Add Journey FAB (home tab only, auth only) */}
+                {isAuthenticated && activeTab === 'home' && (
+                    <AddJourneyModal />
+                )}
             </div>
         </div>
     );

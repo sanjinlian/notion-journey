@@ -29,6 +29,22 @@ export interface ItineraryItem {
     icon?: string | null;
 }
 
+export interface TaskItem {
+    id: string;
+    title: string;
+    date: string | null;
+    done: boolean;
+}
+
+export interface ExpenseItem {
+    id: string;
+    title: string;
+    date: string;
+    amount: number;
+    category: string; // reuses journey select
+    description: string;
+}
+
 /**
  * 將 Emoji 轉換為 SVG Data URL，以便作為 Favicon 使用
  */
@@ -106,8 +122,6 @@ export const getTripData = cache(async () => {
     const results = response.results as any[];
 
     // 1. 分類：找出 Type = 'config' 的項目
-    //    新邏輯：檢查 properties.type 為 'config'
-    //    並且細分 config 類別：檢查 properties.config 為 'country', 'city', 'exchange', 'gmt'
     const configItems = results.filter(r => r.properties.type?.select?.name === 'config');
 
     const countryRow = configItems.find(r => r.properties.config?.select?.name === 'country');
@@ -123,18 +137,16 @@ export const getTripData = cache(async () => {
         exchangeRate: exchangeRow?.properties.title?.title[0]?.plain_text || 'JPY',
         timezone: gmtRow?.properties.title?.title[0]?.plain_text || 'GMT+8',
         icon: dbIcon,
-        infoPage: undefined, // Will populate below
+        infoPage: undefined,
     };
 
     // 1.1 Info Page Content (config=info)
     const infoRow = configItems.find(r => r.properties.config?.select?.name === 'info');
     if (infoRow) {
         try {
-            // Re-use logic or call getPageBlocks directly if possible, or just call notion API here
             const blocksResponse = await notion.blocks.children.list({
                 block_id: infoRow.id,
             });
-            // Enhance metadata with content
             metadata.infoPage = {
                 id: infoRow.id,
                 title: infoRow.properties.title?.title[0]?.plain_text || 'Info',
@@ -146,11 +158,9 @@ export const getTripData = cache(async () => {
     }
 
     // 2. 行程：找出 Type = 'journey' 的項目
-    //    新邏輯：檢查 properties.type 為 'journey'
-    //    類別來源：properties.journey (取代原本的 properties.category)
     const itinerary: ItineraryItem[] = results
         .filter(r => r.properties.type?.select?.name === 'journey')
-        .filter(r => r.properties.date?.date?.start) // skip items without dates
+        .filter(r => r.properties.date?.date?.start)
         .map(page => {
             let coverUrl = null;
             if (page.cover) {
@@ -161,16 +171,12 @@ export const getTripData = cache(async () => {
                 }
             }
 
-            // 防呆：如果還是沒改 database column 導致 journey 空值，嘗試 fallback 到 category (可選)
-            // 這裡嚴格依照需求：讀取 journey 欄位
             const category = page.properties.journey?.select?.name || 'other';
 
-            // 讀取 description 欄位 (Rich Text)
             const description = page.properties.description?.rich_text
                 ?.map((t: any) => t.plain_text)
                 .join('') || '';
 
-            // page.icon handling
             let icon: string | null = null;
             if (page.icon) {
                 if (page.icon.type === 'emoji') {
@@ -197,7 +203,41 @@ export const getTripData = cache(async () => {
         })
         .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    return { metadata, itinerary };
+    // 3. 任務：找出 Type = 'task' 的項目
+    const tasks: TaskItem[] = results
+        .filter(r => r.properties.type?.select?.name === 'task')
+        .map(page => ({
+            id: page.id,
+            title: page.properties.title?.title[0]?.plain_text || '未命名任務',
+            date: page.properties.date?.date?.start || null,
+            done: page.properties.done?.checkbox ?? false,
+        }))
+        .sort((a, b) => {
+            // 未完成的排前面，同狀態按日期
+            if (a.done !== b.done) return a.done ? 1 : -1;
+            if (!a.date && !b.date) return 0;
+            if (!a.date) return 1;
+            if (!b.date) return -1;
+            return new Date(a.date).getTime() - new Date(b.date).getTime();
+        });
+
+    // 4. 記帳：找出 Type = 'expense' 的項目
+    const expenses: ExpenseItem[] = results
+        .filter(r => r.properties.type?.select?.name === 'expense')
+        .filter(r => r.properties.date?.date?.start)
+        .map(page => ({
+            id: page.id,
+            title: page.properties.title?.title[0]?.plain_text || '未命名消費',
+            date: page.properties.date?.date?.start || '',
+            amount: page.properties.amount?.number ?? 0,
+            category: page.properties.journey?.select?.name || 'other',
+            description: page.properties.description?.rich_text
+                ?.map((t: any) => t.plain_text)
+                .join('') || '',
+        }))
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return { metadata, itinerary, tasks, expenses };
 });
 
 export const getPasswordConfig = cache(async () => {
@@ -245,3 +285,104 @@ export const getPageBlocks = cache(async (pageId: string) => {
         throw error;
     }
 });
+
+// ─── Write Functions ──────────────────────────────────────────────────────────
+
+function getNotionClient() {
+    const apiKey = process.env.NOTION_API_KEY;
+    const databaseId = process.env.NOTION_DATABASE_ID;
+    if (!apiKey || !databaseId) throw new Error('Missing Notion credentials');
+    return { notion: new Client({ auth: apiKey }), databaseId };
+}
+
+export interface CreateJourneyData {
+    title: string;
+    date: string; // ISO datetime string e.g. "2026-01-01T09:00"
+    category: string;
+    description?: string;
+    mapsUrl?: string;
+}
+
+export async function createJourneyEntry(data: CreateJourneyData) {
+    const { notion, databaseId } = getNotionClient();
+    return notion.pages.create({
+        parent: { database_id: databaseId },
+        properties: {
+            title: { title: [{ text: { content: data.title } }] },
+            date: { date: { start: data.date } },
+            type: { select: { name: 'journey' } },
+            journey: { select: { name: data.category } },
+            ...(data.description && {
+                description: { rich_text: [{ text: { content: data.description } }] },
+            }),
+            ...(data.mapsUrl && {
+                maps: { url: data.mapsUrl },
+            }),
+        },
+    });
+}
+
+export async function updateJourneyDate(pageId: string, newDate: string) {
+    const { notion } = getNotionClient();
+    return notion.pages.update({
+        page_id: pageId,
+        properties: {
+            date: { date: { start: newDate } },
+        },
+    });
+}
+
+export interface CreateTaskData {
+    title: string;
+    date?: string;
+}
+
+export async function createTask(data: CreateTaskData) {
+    const { notion, databaseId } = getNotionClient();
+    return notion.pages.create({
+        parent: { database_id: databaseId },
+        properties: {
+            title: { title: [{ text: { content: data.title } }] },
+            type: { select: { name: 'task' } },
+            done: { checkbox: false },
+            ...(data.date && {
+                date: { date: { start: data.date } },
+            }),
+        },
+    });
+}
+
+export async function updateTaskDone(pageId: string, done: boolean) {
+    const { notion } = getNotionClient();
+    return notion.pages.update({
+        page_id: pageId,
+        properties: {
+            done: { checkbox: done },
+        },
+    });
+}
+
+export interface CreateExpenseData {
+    title: string;
+    date: string;
+    amount: number;
+    category: string;
+    description?: string;
+}
+
+export async function createExpense(data: CreateExpenseData) {
+    const { notion, databaseId } = getNotionClient();
+    return notion.pages.create({
+        parent: { database_id: databaseId },
+        properties: {
+            title: { title: [{ text: { content: data.title } }] },
+            date: { date: { start: data.date } },
+            type: { select: { name: 'expense' } },
+            journey: { select: { name: data.category } },
+            amount: { number: data.amount },
+            ...(data.description && {
+                description: { rich_text: [{ text: { content: data.description } }] },
+            }),
+        },
+    });
+}

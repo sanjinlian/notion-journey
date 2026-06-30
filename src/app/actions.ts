@@ -1,7 +1,10 @@
 'use server';
 
-import { getPasswordConfig } from '@/lib/notion';
+import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
+import { getPasswordConfig, createJourneyEntry, updateJourneyDate, createTask, updateTaskDone, createExpense } from '@/lib/notion';
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export async function verifyPasswordAction(prevState: any, formData: FormData) {
     const inputPassword = formData.get('password') as string;
@@ -14,18 +17,14 @@ export async function verifyPasswordAction(prevState: any, formData: FormData) {
         const correctPassword = await getPasswordConfig();
 
         if (!correctPassword) {
-            // 如果 Notion 沒設定密碼，理論上應該開放或報錯。
-            // 這裡假設若沒設定密碼，則任何輸入都算錯誤（因為系統預期要是受保護的）。
-            // 或者視為設定錯誤。
             console.error("No password configured in Notion.");
             return { success: false, message: '系統未設定密碼，請聯繫管理員' };
         }
 
         if (inputPassword === correctPassword) {
-            // 驗證成功，設定 Cookie
             const sevenDays = 60 * 60 * 24 * 7 * 1000;
             (await cookies()).set('journey_auth', 'true', {
-                maxAge: 60 * 60 * 24 * 7, // 7 Days in seconds
+                maxAge: 60 * 60 * 24 * 7,
                 expires: Date.now() + sevenDays,
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
@@ -36,9 +35,94 @@ export async function verifyPasswordAction(prevState: any, formData: FormData) {
         } else {
             return { success: false, message: '密碼錯誤，請重試' };
         }
-
     } catch (error) {
         console.error("Password verification error:", error);
         return { success: false, message: '驗證過程發生錯誤' };
+    }
+}
+
+// ─── Journey ──────────────────────────────────────────────────────────────────
+
+export async function createJourneyAction(prevState: any, formData: FormData) {
+    const title = formData.get('title') as string;
+    const date = formData.get('date') as string;
+    const category = formData.get('category') as string;
+    const description = formData.get('description') as string;
+    const mapsUrl = formData.get('mapsUrl') as string;
+
+    if (!title?.trim()) return { success: false, message: '請輸入行程名稱' };
+    if (!date) return { success: false, message: '請選擇日期' };
+
+    try {
+        await createJourneyEntry({ title: title.trim(), date, category, description, mapsUrl });
+        revalidatePath('/');
+        return { success: true };
+    } catch (e: any) {
+        console.error('createJourneyAction error:', e);
+        return { success: false, message: e.message || '新增失敗' };
+    }
+}
+
+export async function updateJourneyDateAction(pageId: string, newDate: string) {
+    try {
+        await updateJourneyDate(pageId, newDate);
+        revalidatePath('/');
+        return { success: true };
+    } catch (e: any) {
+        console.error('updateJourneyDateAction error:', e);
+        return { success: false, message: e.message || '更新失敗' };
+    }
+}
+
+// ─── Tasks ────────────────────────────────────────────────────────────────────
+
+export async function createTaskAction(prevState: any, formData: FormData) {
+    const title = formData.get('title') as string;
+    const date = formData.get('date') as string;
+
+    if (!title?.trim()) return { success: false, message: '請輸入任務名稱' };
+
+    try {
+        await createTask({ title: title.trim(), date: date || undefined });
+        revalidatePath('/');
+        return { success: true };
+    } catch (e: any) {
+        console.error('createTaskAction error:', e);
+        return { success: false, message: e.message || '新增失敗' };
+    }
+}
+
+export async function toggleTaskDoneAction(pageId: string, done: boolean) {
+    try {
+        await updateTaskDone(pageId, done);
+        revalidatePath('/');
+        return { success: true };
+    } catch (e: any) {
+        console.error('toggleTaskDoneAction error:', e);
+        return { success: false, message: e.message || '更新失敗' };
+    }
+}
+
+// ─── Expense ──────────────────────────────────────────────────────────────────
+
+export async function createExpenseAction(prevState: any, formData: FormData) {
+    const title = formData.get('title') as string;
+    const date = formData.get('date') as string;
+    const amountStr = formData.get('amount') as string;
+    const category = formData.get('category') as string;
+    const description = formData.get('description') as string;
+
+    if (!title?.trim()) return { success: false, message: '請輸入消費名稱' };
+    if (!date) return { success: false, message: '請選擇日期' };
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount <= 0) return { success: false, message: '請輸入有效金額' };
+
+    try {
+        await createExpense({ title: title.trim(), date, amount, category: category || 'other', description });
+        revalidatePath('/');
+        return { success: true };
+    } catch (e: any) {
+        console.error('createExpenseAction error:', e);
+        return { success: false, message: e.message || '新增失敗' };
     }
 }

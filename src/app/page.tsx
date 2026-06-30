@@ -1,4 +1,5 @@
 import React from 'react';
+import { cookies } from 'next/headers';
 import { getTripData, getPasswordConfig } from '@/lib/notion';
 import SetupGuide from '@/components/SetupGuide';
 import JourneyDashboard from '@/components/JourneyDashboard';
@@ -31,5 +32,14 @@ export default async function Home() {
   }
 
   const passwordConfig = await getPasswordConfig();
-  return <JourneyDashboard data={tripData} requiredPassword={passwordConfig} />;
+  const cookieStore = await cookies();
+  const isAuthenticated = cookieStore.get('journey_auth')?.value === 'true';
+
+  return (
+    <JourneyDashboard
+      data={tripData}
+      requiredPassword={passwordConfig}
+      isAuthenticated={isAuthenticated}
+    />
+  );
 }
